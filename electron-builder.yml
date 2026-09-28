@@ -1,0 +1,31 @@
+appId: com.mineradio3d.player
+productName: MineRadio3D Player
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+icon: build/icon.png
+win:
+  target: nsis
+  icon: build/icon.png
+  protocols:
+    - name: MineRadio3D Deep Link
+      schemes:
+        - mineradio
+mac:
+  target: dmg
+  protocols:
+    - name: MineRadio3D Deep Link
+      schemes:
+        - mineradio
+linux:
+  target: AppImage
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: MineRadio3D Player

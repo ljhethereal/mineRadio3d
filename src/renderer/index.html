@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http://127.0.0.1:*; media-src 'self' media: blob: http://127.0.0.1:*; connect-src 'self' ws: http://127.0.0.1:*; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    />
+    <title>MineRadio3D Player</title>
+  </head>
+  <body style="margin: 0; background: #010304; overflow: hidden;">
+    <div id="root"></div>
+    <div
+      id="startup-shield"
+      style="
+        position: fixed;
+        inset: 0;
+        background: #010304;
+        z-index: 2147483647;
+        pointer-events: none;
+      "
+    ></div>
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        const shield = document.getElementById('startup-shield')
+        if (shield) {
+          shield.style.transition = 'opacity 300ms ease'
+          shield.style.opacity = '0'
+          setTimeout(() => shield.remove(), 350)
+        }
+      })
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

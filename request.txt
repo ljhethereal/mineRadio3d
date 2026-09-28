@@ -1,0 +1,4 @@
+function :
+1.add a button in playback interface to change the mode( a mode to close the particular effects and decrease the memory overhead )and turn the app into the mode automatically while running in the background.
+bug:
+1.some songs can not show any lyric and user can not see any thing like reminder. so make user can input the name of song and select the right one when the function is wrong.

@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <!-- 单文件 UI 原型：明日方舟式鼠标视差悬浮 + Canvas 粒子星空 + 毛玻璃卡片
+       布局：中央竖排今日标语 + 左右两侧错落摆放的菜单项，大量留白
+       用法：浏览器直接打开即可预览；所有资源均为代码生成，无图片、无外部依赖 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MineRadio3D · UI 原型</title>
+  <style>
+    /* ============================================================
+       0. 设计令牌 —— 与现有 App 配色体系保持一致
+       ============================================================ */
+    :root {
+      --bg-0: #010304;
+      --bg-1: #05070d;
+      --text: #eafffb;
+      --text-dim: rgba(234, 255, 251, 0.55);
+      --text-faint: rgba(234, 255, 251, 0.32);
+      --accent: #00f5d4;
+      --accent-2: #2442ff;
+      --gold: #f4d28a;
+      --pink: #ff4d6d;
+      --glass-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+      --glass-border: 1px solid rgba(255, 255, 255, 0.09);
+      --glass-radius: 18px;
+      --glass-shadow: 0 18px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      --max-angle: 2.4deg;        /* 场景最大倾斜角（稍大但依旧克制，避免眩晕） */
+      --max-float: 18px;          /* 卡片最大视差浮动距离 */
+      --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", "Consolas", "JetBrains Mono", monospace;
+    }
+
+    /* ============================================================
+       1. 基础布局 & 图层分层
+       层级（从底到顶）：
+         body 深色底 → .nebula 星云辉光(CSS渐变,固定) → #stars Canvas 粒子星空(固定,不参与旋转)
+         → #scene(透视容器) → #tilt(3D 倾斜层,含全部 UI)
+       ============================================================ */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      background: radial-gradient(ellipse at 50% 20%, var(--bg-1) 0%, var(--bg-0) 75%);
+      color: var(--text);
+      font-family: var(--font);
+      overflow: hidden;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 星云辉光：CSS 径向渐变，位于星空之下营造深空氛围（无图片） */
+    .nebula {
+      position: fixed; inset: 0; z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 22% 78%, rgba(0, 245, 212, 0.10) 0%, transparent 42%),
+        radial-gradient(ellipse at 80% 25%, rgba(36, 66, 255, 0.12) 0%, transparent 45%),
+        radial-gradient(ellipse at 70% 85%, rgba(244, 210, 138, 0.06) 0%, transparent 38%),
+        radial-gradient(ellipse at 40% 10%, rgba(255, 77, 109, 0.05) 0%, transparent 35%);
+    }
+
+    /* Canvas 粒子星空：固定在底层，旋转/视差只作用于上层的 #tilt，星空不参与旋转 */
+    #stars {
+      position: fixed; inset: 0; z-index: 1;
+      display: block;
+    }
+
+    /* 3D 透视容器：固定铺满视口，透视原点居中（固定原点避免晃动眩晕） */
+    #scene {
+      position: fixed; inset: 0; z-index: 2;
+      perspective: 1200px;
+      perspective-origin: 50% 50%;
+      overflow: hidden;
+    }
+
+    /* 3D 倾斜层：由 JS 写入 rotateX/rotateY + 轻微放大(scale 1.04 防止倾斜露出边缘空隙) */
+    #tilt {
+      position: absolute; inset: 0;
+      transform-style: preserve-3d;
+      will-change: transform;
+      display: flex; flex-direction: column;
+      padding: 28px clamp(28px, 5vw, 72px);   /* 大留白 */
+      gap: 22px;
+    }
+
+    /* ============================================================
+       2. 毛玻璃卡片
+       每个卡片 = .card-wrap(承担 JS 视差位移, depth 决定浮动量) + .card(毛玻璃外观与 hover 抬升)
+       这样 JS 的 translate3d 与 CSS 的 hover transform 互不冲突
+       ============================================================ */
+    .card-wrap { transform-style: preserve-3d; }
+    .card {
+      position: relative;
+      height: 100%;
+      background: var(--glass-bg);
+      border: var(--glass-border);
+      border-radius: var(--glass-radius);
+      box-shadow: var(--glass-shadow);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      padding: 18px 20px;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .card:hover {
+      border-color: rgba(0, 245, 212, 0.28);
+      box-shadow: 0 22px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      transform: translateY(-4px);   /* hover 抬升：作用于内层卡片，不影响 JS 视差 */
+    }
+
+    /* 各层深度(translateZ 决定倾斜时的视差大小)：数值越大离视点越近、视差越明显 */
+    .zd-60 { --zd: 60px; }
+    .zd-48 { --zd: 48px; }
+    .zd-36 { --zd: 36px; }
+    .zd-24 { --zd: 24px; }
+    .zd-12 { --zd: 12px; }
+
+    .card-title {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; letter-spacing: 2px; color: var(--text-dim);
+      text-transform: uppercase; margin-bottom: 14px; font-weight: 600;
+    }
+    .card-title::before {
+      content: "";
+      width: 3px; height: 14px; border-radius: 2px; margin-right: 8px;
+      background: linear-gradient(180deg, var(--accent), var(--accent-2));
+    }
+    .card-title .tag { color: var(--text-faint); font-size: 10px; letter-spacing: 1px; }
+
+    /* ============================================================
+       3. 原生控件（保留原生点击/hover/focus 交互，仅做视觉皮肤）
+       ============================================================ */
+    button {
+      font-family: inherit;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 8px 16px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease, color 0.15s ease;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    button:hover { background: rgba(255, 255, 255, 0.10); border-color: rgba(0, 245, 212, 0.4); }
+    button:active { transform: translateY(1px) scale(0.98); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .btn-primary {
+      background: linear-gradient(135deg, rgba(0, 245, 212, 0.85), rgba(36, 120, 255, 0.85));
+      border-color: transparent; color: #010304; font-weight: 700;
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, rgba(0, 245, 212, 1), rgba(36, 120, 255, 0.95));
+      border-color: transparent;
+    }
+    .btn-icon {
+      width: 42px; height: 42px; padding: 0; border-radius: 50%;
+      font-size: 16px; display: inline-flex; align-items: center; justify-content: center;
+    }
+    .btn-play {
+      width: 56px; height: 56px; font-size: 22px;
+      background: linear-gradient(135deg, rgba(0, 245, 212, 0.9), rgba(36, 120, 255, 0.9));
+      border-color: transparent; color: #010304;
+    }
+
+    /* 搜索框 */
+    .search-box {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 12px; padding: 6px 12px;
+    }
+    .search-box input {
+      border: none; background: transparent; color: var(--text);
+      font-family: inherit; font-size: 13px; width: 150px; outline: none;
+    }
+    .search-box input::placeholder { color: var(--text-faint); }
+    .search-box input:focus-visible { outline: 2px solid rgba(0, 245, 212, 0.5); outline-offset: 2px; border-radius: 4px; }
+
+    /* 滑动条：进度 / 音量(原生 range，青色调) */
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      height: 4px; border-radius: 2px;
+      background: linear-gradient(90deg, var(--accent) var(--fill, 0%), rgba(255, 255, 255, 0.14) var(--fill, 0%));
+      outline: none; cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #eafffb; border: none;
+      box-shadow: 0 0 8px rgba(0, 245, 212, 0.8);
+      transition: transform 0.1s ease;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.25); }
+    input[type="range"]:focus-visible { outline: 2px solid rgba(0, 245, 212, 0.6); outline-offset: 3px; }
+
+    /* ============================================================
+       4. 顶栏（极简，制造留白）
+       ============================================================ */
+    .header-wrap { flex: 0 0 auto; }
+    .header { display: flex; align-items: center; gap: 24px; padding: 4px 6px; }
+    .logo { display: flex; align-items: center; gap: 12px; }
+    .logo-mark {
+      width: 30px; height: 30px; border-radius: 9px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      display: grid; place-items: center; color: #010304; font-weight: 900; font-size: 15px;
+      box-shadow: 0 0 18px rgba(0, 245, 212, 0.4);
+    }
+    .logo-title { font-size: 16px; font-weight: 800; letter-spacing: 1px; }
+    .logo-title small {
+      display: block; font-size: 9px; font-weight: 500; color: var(--text-faint); letter-spacing: 3px;
+    }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+    /* ============================================================
+       5. 舞台：三栏布局 —— 左菜单栏 | 中央竖排标语 | 右信息栏
+       固定布局，非自由 3D 场景；左右两栏菜单错落摆放
+       ============================================================ */
+    .stage {
+      flex: 1 1 auto;
+      display: flex;
+      justify-content: center;   /* 整组水平居中，两侧到窗口边框的距离对称 */
+      align-items: center;       /* 垂直居中：左/中/右三组与横向中轴线对齐 */
+      gap: 24px;                 /* 基础间距；JS 按窗口宽度微调，使 边框距≈中央标语框距 */
+      overflow-y: auto;
+      padding-right: 4px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0, 245, 212, 0.25) transparent;
+    }
+    .stage::-webkit-scrollbar { width: 6px; }
+    .stage::-webkit-scrollbar-thumb { background: rgba(0, 245, 212, 0.25); border-radius: 3px; }
+
+    /* 两列 */
+    .rail { display: flex; flex-direction: column; }
+    .rail.left  { align-items: flex-start; width: 500px; gap: 16px; }   /* 左栏放大一倍，模块等距排列 */
+    .rail.right { align-items: flex-end; width: 340px; }
+
+    /* 错落摆放：每项不同 margin-top，形成不规整的竖直节奏（明日方舟式菜单感） */
+    .mt0 { margin-top: 0; }
+    .mt1 { margin-top: 70px; }
+    .mt2 { margin-top: 120px; }
+    .mt3 { margin-top: 175px; }
+    .mt4 { margin-top: 40px; }
+    .mt5 { margin-top: 95px; }
+    .mt6 { margin-top: 150px; }
+
+    /* --- 左侧菜单项（放大一倍） --- */
+    .menu {
+      display: flex; align-items: center; gap: 22px;
+      width: 500px; padding: 26px 34px; text-align: left;
+    }
+    .menu .no {
+      font-family: var(--font-mono); font-size: 18px; letter-spacing: 1px;
+      color: var(--text-faint);
+    }
+    .menu .body { flex: 1; min-width: 0; }
+    .menu .lb { font-size: 24px; letter-spacing: 3px; font-weight: 600; transition: color 0.15s ease; }
+    .menu .en { font-size: 12px; letter-spacing: 2px; color: var(--text-faint); margin-top: 4px; }
+    .menu:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(0, 245, 212, 0.4); }
+    .menu:hover .lb { color: var(--accent); }
+    .menu.primary {
+      background: linear-gradient(135deg, rgba(0, 245, 212, 0.16), rgba(36, 66, 255, 0.12));
+      border-color: rgba(0, 245, 212, 0.32);
+    }
+    .menu.primary .no { color: var(--accent); }
+    .menu.active .no { color: var(--accent); }
+    .menu.active .lb { color: var(--accent); }
+    .menu.active { border-color: rgba(0, 245, 212, 0.35); }
+
+    /* 菜单内的小型 EQ 指示条 */
+    .eq { display: flex; align-items: flex-end; gap: 4px; height: 34px; padding: 0 4px; }
+    .eq span {
+      width: 5px; border-radius: 2px;
+      background: linear-gradient(180deg, var(--accent), var(--accent-2));
+      height: 8px;
+    }
+    .eq.playing span { animation: eq 0.9s ease-in-out infinite; }
+    .eq.playing span:nth-child(2) { animation-delay: .1s; }
+    .eq.playing span:nth-child(3) { animation-delay: .25s; }
+    .eq.playing span:nth-child(4) { animation-delay: .05s; }
+    .eq.playing span:nth-child(5) { animation-delay: .3s; }
+    @keyframes eq {
+      0%, 100% { height: 8px; }
+      50% { height: 32px; }
+    }
+
+    /* --- 中央竖排今日标语 --- */
+    .center-wrap { align-self: center; }
+    .slogan {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 22px; padding: 34px 26px; min-height: 500px; width: 190px;
+    }
+    .slogan-top {
+      font-family: var(--font-mono); font-size: 11px; letter-spacing: 3px;
+      color: var(--text-faint);
+    }
+    .slogan-text {
+      writing-mode: vertical-rl;      /* 竖排：自上而下 */
+      text-orientation: upright;
+      font-size: clamp(22px, 2.6vw, 34px);
+      font-weight: 800;
+      letter-spacing: 12px;
+      line-height: 1;
+      background: linear-gradient(180deg, var(--gold), #eafffb 55%, rgba(0, 245, 212, 0.72));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      filter: drop-shadow(0 0 14px rgba(0, 245, 212, 0.22));
+      padding: 6px 0;
+    }
+    .slogan-line {
+      width: 1px; height: 64px;
+      background: linear-gradient(180deg, transparent, rgba(0, 245, 212, 0.55), transparent);
+    }
+    .slogan-sub { font-size: 10px; letter-spacing: 5px; color: var(--gold); }
+
+    /* --- 右侧正在热播（播放控制） --- */
+    .player { display: flex; flex-direction: column; min-height: 260px; }
+    .hero-label {
+      display: inline-flex; align-items: center; gap: 8px;
+      color: var(--accent); font-size: 11px; letter-spacing: 4px; font-weight: 600;
+    }
+    .hero-label::before {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 10px var(--accent);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+    .hero-title {
+      font-size: clamp(22px, 2vw, 30px); font-weight: 800; letter-spacing: 1px;
+      margin: 14px 0 6px; line-height: 1.15;
+      background: linear-gradient(90deg, #eafffb, rgba(0, 245, 212, 0.85));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .hero-meta { color: var(--text-dim); font-size: 12px; }
+    .progress-row { display: flex; align-items: center; gap: 10px; margin: 16px 0 14px; }
+    .progress-row input[type="range"] { flex: 1; }
+    .progress-time {
+      font-family: var(--font-mono); font-size: 11px;
+      color: var(--text-faint); min-width: 76px; text-align: center;
+    }
+    .hero-actions { display: flex; align-items: center; gap: 12px; margin-top: auto; }
+    .player-volume { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 12px; }
+    .player-volume input[type="range"] { flex: 1; }
+
+    /* --- 右侧最近播放 / 队列 --- */
+    .queue { display: flex; flex-direction: column; gap: 4px; width: 300px; }
+    .song {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 10px; border-radius: 10px;
+      cursor: pointer; border: 1px solid transparent;
+      transition: background 0.15s ease, border-color 0.15s ease;
+      font-size: 13px;
+    }
+    .song:hover { background: rgba(255, 255, 255, 0.05); }
+    .song.active { background: rgba(0, 245, 212, 0.08); border-color: rgba(0, 245, 212, 0.22); }
+    .song .idx { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; width: 20px; text-align: right; }
+    .song .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .song .src { color: var(--text-faint); font-size: 10px; letter-spacing: 1px; }
+    .song .len { color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; }
+
+    /* --- 页脚提示 --- */
+    .foot-wrap { flex: 0 0 auto; }
+    .foot {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 6px; font-size: 11px; color: var(--text-faint);
+    }
+    .foot .dot { color: var(--accent); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+
+    /* ============================================================
+       6. 响应式：窄窗口时改为纵向堆叠，标语转横向
+       ============================================================ */
+    @media (max-width: 1260px) {
+      .stage {
+        flex-direction: column;
+        gap: 26px;
+      }
+      .rail.left, .rail.right {
+        align-items: stretch; width: 100%;
+        flex-direction: row; flex-wrap: wrap; gap: 14px;
+      }
+      .rail .card-wrap { margin-top: 0 !important; flex: 1 1 240px; }
+      .menu, .queue { width: 100%; }
+      .center-wrap { order: -1; align-self: center; }
+      .slogan { min-height: auto; flex-direction: row; width: auto; }
+      .slogan-text {
+        writing-mode: horizontal-tb;
+        text-orientation: mixed;
+        letter-spacing: 6px;
+        padding: 0 6px;
+      }
+      .slogan-line { width: 64px; height: 1px; }
+    }
+    @media (max-width: 560px) {
+      .search-box, .logo-title small { display: none; }
+    }
+
+    /* ============================================================
+       7. 无障碍：用户偏好减少动态效果时，关闭倾斜与闪烁
+       ============================================================ */
+    @media (prefers-reduced-motion: reduce) {
+      .eq.playing span { animation: none; }
+      .hero-label::before { animation: none; }
+      #tilt, .card-wrap { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <!-- 星云辉光（固定） -->
+  <div class="nebula" aria-hidden="true"></div>
+  <!-- 粒子星空 Canvas（固定，不参与旋转） -->
+  <canvas id="stars" aria-hidden="true"></canvas>
+
+  <!-- 3D 场景：透视容器 #scene → 倾斜层 #tilt（含全部 UI） -->
+  <div id="scene">
+    <div id="tilt">
+      <!-- 顶栏（极简） -->
+      <div class="card-wrap header-wrap zd-60" data-depth="0.9">
+        <div class="header">
+          <div class="logo">
+            <div class="logo-mark">M3</div>
+            <div class="logo-title">MineRadio3D<small>DEEP SPACE PLAYER</small></div>
+          </div>
+          <div class="header-right">
+            <div class="search-box">
+              <span style="opacity:.5">⌕</span>
+              <input type="search" placeholder="搜索本地 / Bilibili" aria-label="搜索" />
+            </div>
+            <button class="btn-icon" title="设置" aria-label="设置">⚙</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 舞台：左菜单 | 中央标语 | 右信息，均错落摆放 -->
+      <div class="stage" id="stage">
+
+        <!-- 左侧菜单栏 -->
+        <div class="rail left">
+          <div class="card-wrap zd-36 mt0" data-depth="0.7">
+            <button class="card menu primary" id="btn-start">
+              <span class="no">01</span>
+              <span class="body">
+                <div class="lb">开始播放</div>
+                <div class="en">START PLAYBACK</div>
+              </span>
+              <span class="eq" id="eq-menu" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>
+            </button>
+          </div>
+
+          <div class="card-wrap zd-24 mt0" data-depth="0.5">
+            <button class="card menu active" data-tab>
+              <span class="no">02</span>
+              <span class="body">
+                <div class="lb">播放队列</div>
+                <div class="en">PLAY QUEUE</div>
+              </span>
+              <span class="tag" style="font-size:10px;color:var(--text-faint)">4</span>
+            </button>
+          </div>
+
+          <div class="card-wrap zd-24 mt0" data-depth="0.5">
+            <button class="card menu" data-tab>
+              <span class="no">03</span>
+              <span class="body">
+                <div class="lb">自定义歌单</div>
+                <div class="en">PLAYLISTS</div>
+              </span>
+            </button>
+          </div>
+
+          <div class="card-wrap zd-24 mt0" data-depth="0.5">
+            <button class="card menu" data-tab>
+              <span class="no">04</span>
+              <span class="body">
+                <div class="lb">常听排行</div>
+                <div class="en">TOP LISTENED</div>
+              </span>
+            </button>
+          </div>
+
+          <div class="card-wrap zd-24 mt0" data-depth="0.5">
+            <button class="card menu" data-tab>
+              <span class="no">05</span>
+              <span class="body">
+                <div class="lb">每日推荐</div>
+                <div class="en">BILIBILI PICK</div>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 中央竖排今日标语 -->
+        <div class="card-wrap center-wrap zd-48" data-depth="0.6">
+          <div class="card slogan">
+            <div class="slogan-top">2026 / 09 / 24</div>
+            <div class="slogan-text">星海之下必有回响</div>
+            <div class="slogan-line"></div>
+            <div class="slogan-sub">MINE RADIO 3D</div>
+          </div>
+        </div>
+
+        <!-- 右侧信息栏 -->
+        <div class="rail right">
+          <div class="card-wrap zd-48 mt0" data-depth="0.8">
+            <div class="card player">
+              <div class="hero-label">NOW PLAYING · 正在热播</div>
+              <div class="hero-title" id="hero-title">星海漫游</div>
+              <div class="hero-meta" id="hero-meta">Kujira · Bilibili 音频 · 4:12</div>
+
+              <div class="progress-row">
+                <input type="range" id="seek" min="0" max="100" value="42" aria-label="播放进度" />
+                <span class="progress-time" id="time-label">1:47 / 4:12</span>
+              </div>
+
+              <div class="hero-actions">
+                <button class="btn-icon" id="btn-prev" aria-label="上一首">⏮</button>
+                <button class="btn-play" id="btn-play" aria-label="播放/暂停">▶</button>
+                <button class="btn-icon" id="btn-next" aria-label="下一首">⏭</button>
+                <div class="eq" id="eq" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+                <button class="btn-icon" id="btn-fav" aria-label="收藏" title="收藏">♡</button>
+              </div>
+
+              <div class="player-volume">
+                <span style="opacity:.5">🔊</span>
+                <input type="range" id="volume" min="0" max="100" value="62" aria-label="音量" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card-wrap zd-24 mt1" data-depth="0.5">
+            <div class="card">
+              <div class="card-title">最近播放 · 队列 <span class="tag">QUEUE</span></div>
+              <div class="queue" id="queue-list"><!-- 由 JS 填充 --></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 页脚提示 -->
+      <div class="card-wrap foot-wrap zd-12" data-depth="0.2">
+        <div class="foot">
+          <span><span class="dot">●</span> 鼠标移动查看视差 · 最大倾斜 ±2.4° · 移出窗口自动回弹</span>
+          <span>MineRadio3D Player v1.0.0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    'use strict';
+    /* ============================================================
+       A. 粒子星空（Canvas 2D）—— 底层，固定，不参与任何旋转/视差
+       ============================================================ */
+    (function () {
+      const canvas = document.getElementById('stars');
+      const ctx = canvas.getContext('2d');
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      let W = 0, H = 0, stars = [], meteors = [], t = 0;
+
+      const PALETTE = [
+        [234, 255, 251, 0.66],   // 主白
+        [0, 245, 212, 0.62],     // 青
+        [120, 160, 255, 0.60],   // 蓝
+        [244, 210, 138, 0.60],   // 金（少量）
+        [255, 120, 160, 0.55],   // 粉（极少）
+      ];
+
+      function resize() {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2); // 限制 DPR 上限，保证性能
+        W = window.innerWidth;
+        H = window.innerHeight;
+        canvas.width = Math.round(W * dpr);
+        canvas.height = Math.round(H * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        buildStars();
+      }
+
+      /* 按可视面积生成星星数量（面积越大星星越多，封顶 220 颗，保证流畅） */
+      function buildStars() {
+        const count = Math.min(220, Math.round((W * H) / 14000));
+        stars = [];
+        for (let i = 0; i < count; i++) {
+          const c = PALETTE[(Math.random() * PALETTE.length) | 0];
+          stars.push({
+            x: Math.random() * W,
+            y: Math.random() * H,
+            r: Math.random() < 0.85 ? 0.4 + Math.random() * 1.1 : 1.6 + Math.random() * 0.8, // 少数亮星
+            a: 0.18 + Math.random() * 0.45,
+            tw: 1 + Math.random() * 2.4,          // 闪烁速度
+            ph: Math.random() * Math.PI * 2,      // 闪烁相位
+            vx: -2 + Math.random() * 2.5,         // 缓慢漂移（模拟视角前进）
+            vy: 0.2 + Math.random() * 0.8,
+            col: 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',',
+          });
+        }
+      }
+
+      /* 流星：极低概率随机生成一条拖尾短线，飞过即散 */
+      function maybeSpawnMeteor() {
+        if (Math.random() > 0.003) return;
+        meteors.push({
+          x: Math.random() * W * 0.8 + W * 0.2,
+          y: Math.random() * H * 0.3,
+          vx: -(6 + Math.random() * 6),
+          vy: 3 + Math.random() * 3,
+          life: 1,
+        });
+      }
+
+      function drawStars() {
+        ctx.clearRect(0, 0, W, H);
+        const now = performance.now() / 1000;
+        for (let i = 0; i < stars.length; i++) {
+          const s = stars[i];
+          // 闪烁：alpha 随时间正弦起伏
+          const alpha = s.a * (0.6 + 0.4 * Math.sin(now * s.tw + s.ph));
+          ctx.fillStyle = s.col + alpha.toFixed(3) + ')';
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+          ctx.fill();
+          // 缓慢漂移 + 越界回绕
+          s.x += s.vx * 0.016;
+          s.y += s.vy * 0.016;
+          if (s.x < -2) s.x = W + 2; else if (s.x > W + 2) s.x = -2;
+          if (s.y > H + 2) s.y = -2;
+        }
+        // 流星
+        for (let i = meteors.length - 1; i >= 0; i--) {
+          const m = meteors[i];
+          m.x += m.vx * 0.016;
+          m.y += m.vy * 0.016;
+          m.life -= 0.02;
+          if (m.life <= 0) { meteors.splice(i, 1); continue; }
+          const grad = ctx.createLinearGradient(m.x, m.y, m.x - m.vx * 6, m.y - m.vy * 6);
+          grad.addColorStop(0, 'rgba(234,255,251,' + (m.life * 0.8).toFixed(3) + ')');
+          grad.addColorStop(1, 'rgba(234,255,251,0)');
+          ctx.strokeStyle = grad;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(m.x, m.y);
+          ctx.lineTo(m.x - m.vx * 6, m.y - m.vy * 6);
+          ctx.stroke();
+        }
+        t = now;
+      }
+
+      window.addEventListener('resize', resize);
+      resize();
+      window.__drawStars = drawStars;   // 由唯一 rAF 主循环调用
+      window.__maybeMeteor = maybeSpawnMeteor;
+      window.__reduceMotion = reduceMotion;
+      if (reduceMotion) drawStars();    // 减少动态时只画一帧静态星空
+    })();
+
+    /* ============================================================
+       B. 3D 视差弹簧系统 —— 单条 rAF 主循环驱动（性能优化点 8）
+       ============================================================ */
+    (function () {
+      const tilt = document.getElementById('tilt');
+      const wraps = Array.prototype.slice.call(document.querySelectorAll('.card-wrap'));
+      const reduceMotion = window.__reduceMotion;
+
+      const MAX_ANGLE = 2.4;          // 最大倾斜 ±2.4°（比之前稍大，但仍克制，防眩晕）
+      const MAX_FLOAT = 18;           // 卡片最大额外浮动距离(px)
+      const K = 60, D = 14;           // 弹簧刚度/阻尼（接近临界阻尼：平滑、无过冲）
+
+      // 弹簧状态：当前值 + 速度
+      const spring = { rx: 0, ry: 0, fx: 0, fy: 0, vx: 0, vy: 0, ux: 0, uy: 0 };
+      let nx = 0, ny = 0;             // 鼠标归一化坐标 [-1,1]，居中为 0
+
+      /* 单步弹簧积分（帧率无关，dt 上限 50ms 防止后台恢复时跳变） */
+      function step(val, vel, target, dt) {
+        const f = Math.min(dt, 0.05);
+        vel += (target - val) * K * f;
+        vel *= Math.exp(-D * f);
+        val += vel * f;
+        return [val, vel];
+      }
+
+      /* 应用变换：倾斜层 rotateX/rotateY + 微放大遮边；各卡片按 depth 叠加浮动 */
+      function apply() {
+        tilt.style.transform =
+          'rotateX(' + spring.rx.toFixed(3) + 'deg) ' +
+          'rotateY(' + spring.ry.toFixed(3) + 'deg) scale(1.04)';
+        for (let i = 0; i < wraps.length; i++) {
+          const w = wraps[i];
+          const d = parseFloat(w.dataset.depth) || 0;
+          w.style.transform =
+            'translate3d(' + (spring.fx * d).toFixed(2) + 'px, ' +
+            (spring.fy * d).toFixed(2) + 'px, var(--zd))';
+        }
+      }
+
+      // 鼠标位置 → 归一化目标
+      window.addEventListener('mousemove', function (e) {
+        nx = (e.clientX / window.innerWidth - 0.5) * 2;
+        ny = (e.clientY / window.innerHeight - 0.5) * 2;
+      }, { passive: true });
+
+      /* 动态间距：三栏(左500 + 标语190 + 右340)整体居中，
+         按可用宽度微调 gap，使两侧块到窗口边框的距离 ≈ 到中央标语框的距离 */
+      const stageEl = document.getElementById('stage');
+      function layoutStage() {
+        const tiltEl = document.getElementById('tilt');
+        const cs = getComputedStyle(tiltEl);
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const avail = tiltEl.getBoundingClientRect().width - padL * 2;
+        const fixed = 500 + 190 + 340;               // 左栏 + 标语 + 右栏
+        let g = (avail - fixed) / 4;
+        g = Math.max(24, Math.min(120, Math.round(g)));
+        stageEl.style.gap = g + 'px';
+      }
+      window.addEventListener('resize', layoutStage);
+      layoutStage();
+
+      // 鼠标移出窗口 / 窗口失焦 → 目标回中（缓慢回弹）
+      function resetTarget() { nx = 0; ny = 0; }
+      document.addEventListener('mouseout', function (e) {
+        if (!e.relatedTarget) resetTarget();
+      });
+      window.addEventListener('blur', resetTarget);
+
+      // 唯一的主循环：合并星空绘制 + 弹簧积分 + DOM 变换（一次 rAF 完成全部）
+      let raf = 0, last = performance.now(), hidden = false;
+      document.addEventListener('visibilitychange', function () {
+        hidden = document.hidden;
+        last = performance.now();
+        if (!hidden) loop();
+      });
+
+      function loop(now) {
+        raf = requestAnimationFrame(loop);
+        if (hidden) return;
+        const dt = (now - last) / 1000;
+        last = now;
+
+        // 1) 星空底层（固定层）
+        window.__drawStars();
+        window.__maybeMeteor();
+
+        if (reduceMotion) return;     // 减少动态：只保留星空，不做倾斜
+
+        // 2) 弹簧目标：鼠标上移 → 场景后仰；右移 → 向右转
+        const trx = -ny * MAX_ANGLE, try_ = nx * MAX_ANGLE;
+        const tfx = -nx * MAX_FLOAT, tfy = -ny * MAX_FLOAT;
+        const r1 = step(spring.rx, spring.vx, trx, dt);
+        const r2 = step(spring.ry, spring.vy, try_, dt);
+        const r3 = step(spring.fx, spring.ux, tfx, dt);
+        const r4 = step(spring.fy, spring.uy, tfy, dt);
+        spring.rx = r1[0]; spring.vx = r1[1];
+        spring.ry = r2[0]; spring.vy = r2[1];
+        spring.fx = r3[0]; spring.ux = r3[1];
+        spring.fy = r4[0]; spring.uy = r4[1];
+
+        // 3) 应用到 DOM
+        apply();
+      }
+      apply();                        // 初始姿态
+      raf = requestAnimationFrame(loop);
+    })();
+
+    /* ============================================================
+       C. 交互演示 —— 原生控件的最小可用逻辑
+       ============================================================ */
+    (function () {
+      const SONGS = [
+        { name: '星海漫游', artist: 'Kujira', src: 'Bilibili', len: '4:12' },
+        { name: '零重力的夜', artist: 'Nuvoletta', src: '本地', len: '5:02' },
+        { name: '深空信号', artist: 'Orbit Aurora', src: 'Bilibili', len: '3:48' },
+        { name: '永夜航线', artist: '赤井白', src: '本地', len: '6:10' },
+      ];
+      const TOTAL = 252;   // 4:12 的秒数，用于进度换算
+
+      const $ = function (id) { return document.getElementById(id); };
+      const heroTitle = $('hero-title'), heroMeta = $('hero-meta');
+      const queueList = $('queue-list'), btnPlay = $('btn-play'), eq = $('eq');
+      const seek = $('seek'), volume = $('volume'), timeLabel = $('time-label');
+      const eqMenu = $('eq-menu');
+      let current = 0, playing = false, faved = false, filter = '';
+
+      /* 播放/暂停统一切换 */
+      function togglePlay() {
+        playing = !playing;
+        btnPlay.textContent = playing ? '⏸' : '▶';
+        eq.classList.toggle('playing', playing);
+        eqMenu.classList.toggle('playing', playing);
+        const start = $('btn-start');
+        start.style.borderColor = playing ? 'rgba(0,245,212,0.65)' : '';
+      }
+
+      /* range 的青色填充比例同步 */
+      function setFill(el) { el.style.setProperty('--fill', el.value + '%'); }
+      seek.addEventListener('input', function () {
+        setFill(seek);
+        const s = Math.round(TOTAL * seek.value / 100);
+        timeLabel.textContent = fmt(s) + ' / 4:12';
+      });
+      volume.addEventListener('input', function () { setFill(volume); });
+      setFill(seek); setFill(volume);
+
+      function fmt(s) {
+        const m = (s / 60) | 0, ss = s % 60;
+        return m + ':' + (ss < 10 ? '0' : '') + ss;
+      }
+
+      function renderQueue() {
+        const kw = filter.toLowerCase();
+        queueList.innerHTML = '';
+        SONGS.forEach(function (s, i) {
+          if (kw && s.name.toLowerCase().indexOf(kw) === -1) return;
+          const row = document.createElement('div');
+          row.className = 'song' + (i === current ? ' active' : '');
+          row.innerHTML =
+            '<span class="idx">' + (i + 1) + '</span>' +
+            '<span class="name">' + s.name + '</span>' +
+            '<span class="src">' + s.src + '</span>' +
+            '<span class="len">' + s.len + '</span>';
+          row.addEventListener('click', function () { select(i); });
+          queueList.appendChild(row);
+        });
+      }
+
+      function select(i) {
+        current = i;
+        const s = SONGS[i];
+        heroTitle.textContent = s.name;
+        heroMeta.textContent = s.artist + ' · ' + s.src + ' 音频 · ' + s.len;
+        renderQueue();
+      }
+
+      $('btn-start').addEventListener('click', togglePlay);
+      btnPlay.addEventListener('click', togglePlay);
+
+      $('btn-next').addEventListener('click', function () {
+        select((current + 1) % SONGS.length);
+      });
+      $('btn-prev').addEventListener('click', function () {
+        select((current - 1 + SONGS.length) % SONGS.length);
+      });
+
+      const fav = $('btn-fav');
+      fav.addEventListener('click', function () {
+        faved = !faved;
+        fav.textContent = faved ? '♥' : '♡';
+        fav.style.color = faved ? '#ff4d6d' : '';
+        fav.style.borderColor = faved ? 'rgba(255,77,109,0.5)' : '';
+      });
+
+      /* 搜索过滤队列（演示原生 input） */
+      document.querySelector('.search-box input').addEventListener('input', function (e) {
+        filter = e.target.value.trim();
+        renderQueue();
+      });
+
+      /* 左侧菜单标签切换（仅视觉状态） */
+      const tabs = document.querySelectorAll('[data-tab]');
+      tabs.forEach(function (b) {
+        b.addEventListener('click', function () {
+          tabs.forEach(function (x) { x.classList.remove('active'); });
+          b.classList.add('active');
+        });
+      });
+
+      renderQueue();
+    })();
+  </script>
+</body>
+</html>
